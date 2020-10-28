@@ -3,7 +3,7 @@ from django.db import models
 # Create your models here.
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from meiduo_project.utils.models import BaseModel
+from meiduo_mall.utils.models import BaseModel
 
 
 class User(AbstractUser):

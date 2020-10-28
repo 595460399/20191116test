@@ -1,6 +1,6 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django import http
-from meiduo_project.utils.response_code import RETCODE
+from meiduo_mall.utils.response_code import RETCODE
 
 
 class LoginRequiredJSONMixin(LoginRequiredMixin):

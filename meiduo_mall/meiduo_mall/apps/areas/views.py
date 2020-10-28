@@ -1,8 +1,8 @@
 from django.shortcuts import render
 from django.views import View
-from areas.models import Area
+from .models import Area
 from django import http
-from meiduo_project.utils.response_code import RETCODE
+from meiduo_mall.utils.response_code import RETCODE
 from django.core.cache import cache
 
 

@@ -38,12 +38,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'users',
+    'areas',
     'contents',
+    'goods',
     'verififcations',
     'oauth',
-    'areas',
-    'goods',
+    'users'
 ]
 
 MIDDLEWARE = [
@@ -56,7 +56,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'meiduo_project.urls'
+ROOT_URLCONF = 'meiduo_mall.urls'
 
 TEMPLATES = [
     {
@@ -71,12 +71,12 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
-            'environment': 'meiduo_project.utils.jinja2_env.jinja2_environment'
+            'environment': 'meiduo_mall.utils.jinja2_env.jinja2_environment'
         },
     },
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR, 'templates']
+        'DIRS': [os.path.join(BASE_DIR, 'templates')]
         ,
         'APP_DIRS': True,
         'OPTIONS': {
@@ -101,20 +101,21 @@ DATABASES = {
         'ENGINE': 'django.db.backends.mysql',
         'HOST': '127.0.0.1',
         'PSOT': 3306,
-        'USER': 'root',
+        'USER': 'itheima',
         'PASSWORD': '123456',
         'NAME': 'meiduo',
+        'CHARSET':'utf8',
     }
 }
 CACHES = {
-    "default": {
+    "default": {  # 默认
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": "redis://127.0.0.1/0",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
     },
-    "session": {
+    "session": {  # session
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": "redis://127.0.0.1/1",
         "OPTIONS": {

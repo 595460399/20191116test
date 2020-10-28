@@ -2,16 +2,16 @@ from django.shortcuts import render, redirect
 from django.views import View
 from django import http
 import re, json
-from users.models import User, Address
+from .models import User, Address
 from django.db import DatabaseError
 from django.urls import reverse
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.mixins import LoginRequiredMixin
-from meiduo_project.utils.response_code import RETCODE
-from meiduo_project.utils.views import LoginRequiredJSONMixin
+from meiduo_mall.utils.response_code import RETCODE
+from meiduo_mall.utils.views import LoginRequiredJSONMixin
 import os
 from celery_tasks.email.tasks import send_verify_email
-from users.utils import generate_verify_email_url, check_verify_email_token
+from .utils import generate_verify_email_url, check_verify_email_token
 from . import constants
 
 
@@ -35,7 +35,6 @@ class ChangePasswordView(LoginRequiredMixin, View):
         try:
             request.user.check_password(old_password)
         except Exception as e:
-            logger.error(e)
             return render(request, 'user_center_pass.html', {'origin_pwd_errmsg': '原始密码错误'})
         if not re.match(r'^[0-9A-Za-z]{8,20}$', new_password):
             return http.HttpResponseForbidden('密码最少8位，最长20位')
@@ -47,7 +46,6 @@ class ChangePasswordView(LoginRequiredMixin, View):
             request.user.set_password(new_password)
             request.user.save()
         except Exception as e:
-            logger.error(e)
             return render(request, 'user_center_pass.html', {'change_pwd_errmsg': '修改密码失败'})
 
         # 清理状态保持信息

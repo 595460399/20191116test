@@ -1,13 +1,13 @@
 from django.shortcuts import render, redirect
 from django.views import View
 from django.urls import reverse
-from verififcations.libs.captcha.captcha import captcha
+from .libs.captcha.captcha import captcha
 from django import http
 from . import constants
 import os
-from meiduo_project.utils.response_code import RETCODE
+from meiduo_mall.utils.response_code import RETCODE
 import random
-from verififcations.libs.yuntongxun.ccp_sms import CCP
+from .libs.yuntongxun.ccp_sms import CCP
 from celery_tasks.sms.tasks import send_sms_code
 from django_redis import get_redis_connection
 

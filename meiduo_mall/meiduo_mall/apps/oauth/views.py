@@ -3,11 +3,11 @@ from django.views import View
 from QQLoginTool.QQtool import OAuthQQ
 from django.conf import settings
 from django import http
-from meiduo_project.utils.response_code import RETCODE
-from oauth.models import OAuthQQUser
+from meiduo_mall.utils.response_code import RETCODE
+from .models import OAuthQQUser
 from django.contrib.auth import login
 from django.urls import reverse
-from oauth.utils import generate_access_token, check_access_token
+from .utils import generate_access_token, check_access_token
 import re
 from django_redis import get_redis_connection
 from users.models import User
@@ -84,7 +84,6 @@ class QQAuthUserView(View):
         response = redirect(next)
         response.set_cookie('username', oauth_qq_user.user.username, max_age=3600 * 24 * 15)
         return response
-
 
 class QQAuthURLView(View):
     def get(self, request):

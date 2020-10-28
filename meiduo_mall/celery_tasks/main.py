@@ -2,7 +2,7 @@ from celery import Celery
 import os
 
 if not os.getenv('DJANGO_SETTINGS_MODULE'):
-    os.environ['DJANGO_SETTINGS_MODULE'] = 'meiduo_project.settings.dev'
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'meiduo_mall.settings.dev'
 
 celery_app = Celery('meiduo')
 

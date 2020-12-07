@@ -148,7 +148,8 @@ html,body{height:100%}
 /* 菜单、幻灯片样式 */
 
 .navbar_con{height:30px;border-bottom:1px solid #ddd;background:#f9f9f9}
-.navbar{width:1200px;margin:0 auto;}
+/*.navbar{width:1200px;margin:0 auto;}*/
+.navbar{width:1200px;margin:0 auto;position: relative;}
 .navbar h1{width:200px;line-height:30px;text-align: center;font-size:14px;color:#666;background-color:#f1f1f1;font-weight:bold;}
 
 .navbar .subnav_con{width:200px;height:40px;background-color:#39a93e;position:relative;cursor:pointer;}
@@ -220,8 +221,8 @@ html,body{height:100%}
 	display:block;
 }
 
-
-.sub_menu{width:170px;height:330px;background:rgba(0,0,0,0.4);position:absolute;left:50%;top:0px;margin-left:-600px;padding:10px 15px}
+.sub_menu{width:170px;height:330px;background:rgba(0,0,0,0.4);position:absolute;left:50%;top:30px;margin-left:-600px;padding:10px 15px;z-index:999;}
+/*.sub_menu{width:170px;height:330px;background:rgba(0,0,0,0.4);position:absolute;left:50%;top:0px;margin-left:-600px;padding:10px 15px}*/
 
 .sub_menu li{
 	height:30px;
@@ -1250,7 +1251,8 @@ html,body{height:100%}
 
 .judge_con .judge_goods{
 	width:248px;
-	height:300px;
+	/*height:300px;*/
+	height:260px;
 	border:1px solid #ededed;
 	background:#fff;
 }
@@ -1267,7 +1269,8 @@ html,body{height:100%}
 .judge_con .judge_goods_input{
 	width:898px;
 	padding:20px;
-	height:260px;
+	/*height:260px;*/
+	height:220px;
 	border:1px solid #ededed;
 	background:#fff;
 }
@@ -1326,23 +1329,23 @@ html,body{height:100%}
 	width:780px;
 }
 
-.stars_1,.stars_2,.stars_3,.stars_4,.stars_5{
+.stars_one,.stars_two,.stars_three,.stars_four,.stars_five{
 	width:85px;
 	height:17px;
 	background:url(../images/stars.png) left -80px no-repeat;
 	margin-bottom:10px;
 }
 
-.stars_1{
+.stars_one{
 	background-position:left -16px;
 }
-.stars_2{
+.stars_two{
 	background-position:left -32px;
 }
-.stars_3{
+.stars_three{
 	background-position:left -48px;
 }
-.stars_4{
+.stars_four{
 	background-position:left -64px;
 }
 
@@ -1632,4 +1635,9 @@ html,body{height:100%}
 	width:5px;
 	height:7px;
 	background: url(../images/arrow.png);
+}
+
+/*防止页面加载时出现 vue.js 的变量名*/
+[v-cloak] {
+  display:none !important;
 }

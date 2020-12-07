@@ -1,64 +1,82 @@
 from django.shortcuts import render
 from django.views import View
-from .models import Area
 from django import http
-from meiduo_mall.utils.response_code import RETCODE
+import logging
 from django.core.cache import cache
-from . import constants
+
+from areas.models import Area
+from meiduo_mall.utils.response_code import RETCODE
+# Create your views here.
 
 
-class AreaView(View):
+logger = logging.getLogger('django')
+
+
+class AreasView(View):
+    """省市区三级联动"""
+
     def get(self, request):
+        # 判断当前是要查询省份数据还是市区数据
         area_id = request.GET.get('area_id')
-        if area_id is None:
-            # 先获取缓存，如果存在中不存在，再查询mysq并缓存
-            result = cache.get('province_list')
-            if result is None:
-                # 没有传递地区编号，表示查询省列表
-                province_list = Area.objects.filter(parent__isnull=True)
-                # 只返回地区对象的编号、名称
-                province_list2 = []
-                for province in province_list:
-                    province_list2.append({
-                        'id': province.id,
-                        'name': province.name
-                    })
 
-                result = {
-                    'code': RETCODE.OK,
-                    'errmsg': "OK",
-                    'province_list': province_list2
-                }
-                cache.set('province_list', result, constants.AREA_CACHE_EXPIRES)
+        if not area_id:
+            # 获取并判断是否有缓存
+            province_list = cache.get('province_list')
 
-            return http.JsonResponse(result)
-        else:
-            result = cache.get('area_' + area_id)
-            if result is None:
-                # 有地区编号，表示查询指定地区的子级地区列表
+            if not province_list:
+                # 查询省级数据
                 try:
-                    area = Area.objects.get(pk=area_id)
-                except:
-                    return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': '地区编号无效'})
-                # 获取指定地区的子级地区
-                sub_list = area.subs.all()
-                # 整理前端需要的数据格式
-                sub_list2 = []
-                for sub in sub_list:
-                    sub_list2.append({
-                        'id': sub.id,
-                        'name': sub.name
-                    })
+                    province_model_list = Area.objects.filter(parent__isnull=True)
 
-                result = {
-                    'code': RETCODE.OK,
-                    'errmsg': 'OK',
-                    'sub_data': {
-                        'id': area.id,
-                        'name': area.name,
-                        'subs': sub_list2
+                    # 需要将模型列表转成字典列表
+                    province_list = []
+                    for province_model in province_model_list:
+                        province_dict = {
+                            "id": province_model.id,
+                            "name": province_model.name
+                        }
+                        province_list.append(province_dict)
+
+                    # 缓存省份字典列表数据:默认存储到别名为"default"的配置中
+                    cache.set('province_list', province_list, 3600)
+                except Exception as e:
+                    logger.error(e)
+                    return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '查询省份数据错误'})
+
+            # 响应省级JSON数据
+            return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'province_list': province_list})
+        else:
+            # 判断是否有缓存
+            sub_data = cache.get('sub_area_' + area_id)
+
+            if not sub_data:
+                # 查询城市或区县数据
+                try:
+                    parent_model = Area.objects.get(id=area_id)
+                    # sub_model_list = parent_model.area_set.all()
+                    sub_model_list = parent_model.subs.all()
+
+                    # 将子级模型列表转成字典列表
+                    subs= []
+                    for sub_model in sub_model_list:
+                        sub_dict = {
+                          "id":sub_model.id,
+                          "name":sub_model.name
+                        }
+                        subs.append(sub_dict)
+
+                    # 构造子级JSON数据
+                    sub_data = {
+                        'id': parent_model.id,
+                        'name': parent_model.name,
+                        'subs': subs
                     }
-                }
-                cache.set('area_' + area_id, result, constants.AREA_CACHE_EXPIRES)
 
-            return http.JsonResponse(result)
+                    # 缓存城市或者区县
+                    cache.set('sub_area_' + area_id, sub_data, 3600)
+                except Exception as e:
+                    logger.error(e)
+                    return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '查询城市或区县数据错误'})
+
+            # 响应城市或区县JSON数据
+            return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'sub_data': sub_data})

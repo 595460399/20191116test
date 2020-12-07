@@ -18,16 +18,26 @@ from django.contrib import admin
 
 urlpatterns = [
     url(r'^admin/', admin.site.urls),
-    url(r'^', include('users.urls')),
-    url('^', include('verifycations.urls')),
-    url('^', include('contents.urls')),
-    url('^', include('oauth.urls')),
-    url('^', include('areas.urls')),
-    url('^', include('goods.urls')),
-    # url(r'^search/', include('haystack.urls')),
-    url('^', include('carts.urls')),
-    url('^', include('orders.urls')),
-    url('^', include('payments.urls')),
 
+    # haystack
+    url(r'^search/', include('haystack.urls')),
 
+    # users
+    url(r'^', include('users.urls', namespace='users')),
+    # contents
+    url(r'^', include('contents.urls', namespace='contents')),
+    # verifications
+    url(r'^', include('verifications.urls')),
+    # oauth
+    url(r'^', include('oauth.urls')),
+    # areas
+    url(r'^', include('areas.urls')),
+    # goods
+    url(r'^', include('goods.urls', namespace='goods')),
+    # carts
+    url(r'^', include('carts.urls', namespace='carts')),
+    # orders
+    url(r'^', include('orders.urls', namespace='orders')),
+    # payment
+    url(r'^', include('payment.urls', namespace='payment')),
 ]

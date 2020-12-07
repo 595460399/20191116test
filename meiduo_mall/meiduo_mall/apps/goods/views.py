@@ -1,228 +1,198 @@
-import json
-
 from django.shortcuts import render
 from django.views import View
-from meiduo_mall.utils.categories import get_categories
-from .models import GoodsCategory, SKU, GoodsVisitCount
-from django.core.paginator import Paginator
-from . import constants
 from django import http
+# 分页器（有100万文字，需要制作成为一本书，先规定每页多少文字，然后得出一共多少页）
+# 数据库中的记录就是文字，我们需要考虑在分页时每页记录的条数，然后得出一共多少页
+from django.core.paginator import Paginator, EmptyPage
+from django.utils import timezone  # 处理时间的工具
+from datetime import datetime
+
+from goods.models import GoodsCategory
+from contents.utils import get_categories
+from goods.utils import get_breadcrumb
+from goods.models import SKU, GoodsVisitCount
 from meiduo_mall.utils.response_code import RETCODE
-from meiduo_mall.utils.breadcrumb import get_breadcrumb
-from django_redis import get_redis_connection
-from datetime import date
 
 
-class ListView(View):
-    def get(self, request, category_id, page_num):
-        # category_id表示第三级分类的编号
-        # page_num表示第n页数据
-
-        # 查询分类数据
-        categories = get_categories()
-
-        # 查询第三级分类对象
-        cat3 = GoodsCategory.objects.get(pk=category_id)
-        breadcrumb = get_breadcrumb(cat3)
-
-        # 排序规则
-        sort = request.GET.get('sort', 'default')
-        if sort == 'default':
-            sort_field = '-sales'
-        elif sort == 'price':
-            sort_field = 'price'
-        elif sort == 'hot':
-            sort_field = '-comments'
-        else:
-            sort_field = '-sales'
-
-        # 热销排行：通过另外一个视图实现
-        # 查询当前页的商品数据
-        # 1.查询指定分类的数据
-        skus = SKU.objects.filter(category_id=category_id, is_launched=True).order_by(sort_field)
-        # 2.分页
-        # 2.1创建分页对象，指定列表、页大小
-        paginator = Paginator(skus, constants.SKU_LIST_PER_PAGE)
-        # 2.2获取指定页码的数据
-        page_skus = paginator.page(page_num)
-        # 2.3获取总页数
-        total_page = paginator.num_pages
-
-        context = {
-            'categories': categories,
-            'breadcrumb': breadcrumb,
-            'category': cat3,
-            'page_skus': page_skus,
-            'page_num': page_num,
-            'total_page': total_page,
-            'sort': sort
-        }
-
-        return render(request, 'list.html', context)
-
-
-class HotView(View):
-    def get(self, request, category_id):
-        # 查询指定分类的热销商品
-        cat3 = GoodsCategory.objects.get(pk=category_id)
-        skus = cat3.sku_set.order_by('-sales')[0:2]
-
-        sku_list = []
-        for sku in skus:
-            sku_list.append({
-                'id': sku.id,
-                'name': sku.name,
-                'price': sku.price,
-                'default_image_url': sku.default_image.url
-            })
-
-        return http.JsonResponse({
-            'code': RETCODE.OK,
-            'errmsg': "OK",
-            'hot_sku_list': sku_list
-        })
-
-
-class DetailView(View):
-    def get(self, request, sku_id):
-        try:
-            sku = SKU.objects.get(pk=sku_id)
-        except:
-            return http.Http404('商品编号无效')
-
-        # 分类数据
-        categories = get_categories()
-
-        # 获取面包屑导航
-        breadcrumb = get_breadcrumb(sku.category)
-
-        # 获取spu
-        spu = sku.spu
-
-        # 获取规格信息：sku===>spu==>specs
-        specs = spu.specs.order_by('id')
-
-        # 查询所有的sku，如华为P10的所有库存商品
-        skus = spu.skus.order_by('id')
-        '''
-        {
-            选项:sku_id
-        }
-        说明：键的元组中，规格的索引是固定的
-        示例数据如下：
-        {
-            (1,3):1,
-            (2,3):2,
-            (1,4):3,
-            (2,4):4
-        }
-        '''
-        sku_options = {}
-        sku_option = []
-        for sku1 in skus:
-            infos = sku1.specs.order_by('spec_id')
-            option_key = []
-            for info in infos:
-                option_key.append(info.option_id)
-                # 获取当前商品的规格信息
-                if sku.id == sku1.id:
-                    sku_option.append(info.option_id)
-            sku_options[tuple(option_key)] = sku1.id
-
-        # 遍历当前spu所有的规格
-        specs_list = []
-        for index, spec in enumerate(specs):
-            option_list = []
-            for option in spec.options.all():
-                # 如果当前商品为蓝、64,则列表为[2,3]
-                sku_option_temp = sku_option[:]
-                # 替换对应索引的元素：规格的索引是固定的[1,3]
-                sku_option_temp[index] = option.id
-                # 为选项添加sku_id属性，用于在html中输出链接
-                option.sku_id = sku_options.get(tuple(sku_option_temp), 0)
-                # 添加选项对象
-                option_list.append(option)
-            # 为规格对象添加选项列表
-            spec.option_list = option_list
-            # 重新构造规格数据
-            specs_list.append(spec)
-
-        context = {
-            'sku': sku,
-            'categories': categories,
-            'breadcrumb': breadcrumb,
-            'category_id': sku.category_id,
-            'spu': spu,
-            'specs': specs_list
-        }
-        return render(request, 'detail.html', context)
+# Create your views here.
 
 
 class DetailVisitView(View):
+    """统计分类商品的访问量"""
+
     def post(self, request, category_id):
+        # 接收参数和校验参数
         try:
-            gvc = GoodsVisitCount.objects.get(category_id=category_id)
-        except:
-            GoodsVisitCount.objects.create(
-                category_id=category_id,
-                count=1
-            )
-        else:
-            gvc.count += 1
-            gvc.date = date.today()
-            gvc.save()
+            category = GoodsCategory.objects.get(id=category_id)
+        except GoodsCategory.DoesNotExist:
+            return http.HttpResponseForbidden('category_id 不存在')
+
+        # 获取当天的日期
+        t = timezone.localtime()
+        # 获取当天的时间字符串
+        today_str = '%d-%02d-%02d' % (t.year, t.month, t.day)
+        # 将当天的时间字符串转成时间对象datetime，为了跟date字段的类型匹配 2019:05:23  2019-05-23
+        today_date = datetime.strptime(today_str, '%Y-%m-%d')  # 时间字符串转时间对象；datetime.strftime() # 时间对象转时间字符串
+
+        # 是否可以使用 update_or_create 替代
+        # 判断当天中指定的分类商品对应的记录是否存在
+        try:
+            # 如果存在，直接获取到记录对应的对象
+            counts_data = GoodsVisitCount.objects.get(date=today_date, category=category)
+        except GoodsVisitCount.DoesNotExist:
+            # 如果不存在，直接创建记录对应的对象
+            counts_data = GoodsVisitCount()
+
+        try:
+            counts_data.category = category
+            counts_data.count += 1
+            counts_data.date = today_date
+            counts_data.save()
+        except Exception as e:
+            return http.HttpResponseServerError('统计失败')
+
+        # 响应结果
         return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
 
 
-class HistoryView(View):
-    def post(self, request):
-        # 添加浏览记录
-        if not request.user.is_authenticated:
-            return http.JsonResponse({'code': RETCODE.USERERR, 'errmsg': '未登录，不记录浏览信息'})
-        # 接收
-        dict1 = json.loads(request.body.decode())
-        sku_id = dict1.get('sku_id')
-        # 验证
-        if not all([sku_id]):
-            return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': '没有商品编号'})
+class DetailView(View):
+    """商品详情页"""
 
-        # 处理：存入redis
-        redis_cli = get_redis_connection('history')
-        key = 'history_%d' % request.user.id
-        # 1.删除列表中的元素
-        redis_cli.lrem(key, 0, sku_id)
-        # 2.加入最前
-        redis_cli.lpush(key, sku_id)
-        # 3.截取个数
-        redis_cli.ltrim(key, 0, 4)
+    def get(self, request, sku_id):
+        """提供商品详情页"""
+        # 接收和校验参数
+        try:
+            # 查询sku
+            sku = SKU.objects.get(id=sku_id)
+        except SKU.DoesNotExist:
+            # return http.HttpResponseNotFound('sku_id 不存在')
+            return render(request, '404.html')
 
-        # 响应
-        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
+        # 查询商品分类
+        categories = get_categories()
 
-    def get(self, request):
-        if not request.user.is_authenticated:
-            return http.JsonResponse({'code': RETCODE.USERERR, 'errmsg': '未登录不查询浏览记录'})
+        # 查询面包屑导航
+        breadcrumb = get_breadcrumb(sku.category)
 
-        # 从redis读取当前用户的浏览记录
-        redis_cli = get_redis_connection('history')
-        sku_ids_bytes = redis_cli.lrange('history_%d' % request.user.id, 0, -1)
-        # 注意：从redis中读取的数据为bytes类型，需要转换为int类型
-        sku_ids_int = [int(sku_id) for sku_id in sku_ids_bytes]
+        # 构建当前商品的规格键
+        sku_specs = sku.specs.order_by('spec_id')
+        sku_key = []
+        for spec in sku_specs:
+            sku_key.append(spec.option.id)
+        # 获取当前商品的所有SKU
+        skus = sku.spu.sku_set.all()
+        # 构建不同规格参数（选项）的sku字典
+        spec_sku_map = {}
+        for s in skus:
+            # 获取sku的规格参数
+            s_specs = s.specs.order_by('spec_id')
+            # 用于形成规格参数-sku字典的键
+            key = []
+            for spec in s_specs:
+                key.append(spec.option.id)
+            # 向规格参数-sku字典添加记录
+            spec_sku_map[tuple(key)] = s.id
+        # 获取当前商品的规格信息
+        goods_specs = sku.spu.specs.order_by('id')
+        # 若当前sku的规格信息不完整，则不再继续
+        if len(sku_key) < len(goods_specs):
+            return
+        for index, spec in enumerate(goods_specs):
+            # 复制当前sku的规格键
+            key = sku_key[:]
+            # 该规格的选项
+            spec_options = spec.options.all()
+            for option in spec_options:
+                # 在规格参数sku字典中查找符合当前规格的sku
+                key[index] = option.id
+                option.sku_id = spec_sku_map.get(tuple(key))
+            spec.spec_options = spec_options
 
-        # 根据商品编号查询商品对象
-        sku_list = []
-        for sku_id in sku_ids_int:
-            sku = SKU.objects.get(pk=sku_id)
-            sku_list.append({
+        # 构造上下文
+        context = {
+            'categories': categories,
+            'breadcrumb': breadcrumb,
+            'sku': sku,
+            'specs': goods_specs
+        }
+
+        return render(request, 'detail.html', context)
+
+
+class HotGoodsView(View):
+    """热销排行"""
+
+    def get(self, request, category_id):
+        # 查询指定分类的SKU信息，而且必须是上架的状态，然后按照销量由高到低排序，最后切片取出前两位
+        skus = SKU.objects.filter(category_id=category_id, is_launched=True).order_by('-sales')[:2]
+
+        # 将模型列表转字典列表，构造JSON数据
+        hot_skus = []
+        for sku in skus:
+            sku_dict = {
                 'id': sku.id,
                 'name': sku.name,
                 'price': sku.price,
-                'default_image_url': sku.default_image.url
-            })
+                'default_image_url': sku.default_image.url  # 记得要取出全路径
+            }
+            hot_skus.append(sku_dict)
 
-        # 响应
-        return http.JsonResponse({
-            'code': RETCODE.OK,
-            'errmsg': "OK",
-            'skus': sku_list
-        })
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'hot_skus': hot_skus})
+
+
+class ListView(View):
+    """商品列表页"""
+
+    def get(self, request, category_id, page_num):
+        """查询并渲染商品列表页"""
+
+        # 校验参数category_id的范围 ： 1111111111111111111111111111111
+        try:
+            # 三级类别
+            category = GoodsCategory.objects.get(id=category_id)
+        except GoodsCategory.DoesNotExist:
+            return http.HttpResponseForbidden('参数category_id不存在')
+
+        # 获取sort(排序规则): 如果sort没有值，取'default'
+        sort = request.GET.get('sort', 'default')
+        # 根据sort选择排序字段，排序字段必须是模型类的属性
+        if sort == 'price':
+            sort_field = 'price'  # 按照价格由低到高排序
+        elif sort == 'hot':
+            sort_field = '-sales'  # 按照销量由高到低排序
+        else:  # 只要不是'price'和'-sales'其他的所有情况都归为'default'
+            sort = 'default'  # 当出现?sort=itcast 也把sort设置我'default'
+            sort_field = 'create_time'
+
+        # 查询商品分类
+        categories = get_categories()
+
+        # 查询面包屑导航：一级 -> 二级 -> 三级
+        breadcrumb = get_breadcrumb(category)
+
+        # 分页和排序查询：category查询sku,一查多,一方的模型对象.多方关联字段.all/filter
+        skus = category.sku_set.filter(is_launched=True).order_by(sort_field)
+
+        # 创建分页器
+        # Paginator('要分页的记录', '每页记录的条数')
+        paginator = Paginator(skus, 5)  # 把skus进行分页，每页5条记录
+        # 获取到用户当前要看的那一页（核心数据）
+        try:
+            page_skus = paginator.page(page_num)  # 获取到page_num页中的五条记录
+        except EmptyPage:
+            return http.HttpResponseNotFound('Empty Page')
+        # 获取总页数：前端的分页插件需要使用
+        total_page = paginator.num_pages
+
+        # 构造上下文
+        context = {
+            'categories': categories,
+            'breadcrumb': breadcrumb,
+            'page_skus': page_skus,
+            'total_page': total_page,
+            'page_num': page_num,
+            'sort': sort,
+            'category_id': category_id
+        }
+
+        return render(request, 'list.html', context)

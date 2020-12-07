@@ -1,21 +1,19 @@
-var vm = new Vue({
+let vm = new Vue({
     el: '#app',
-	// 修改Vue变量的读取语法，避免和django模板语法冲突
+    // 修改Vue变量的读取语法
     delimiters: ['[[', ']]'],
     data: {
-        host,
-        error_username: false,
-        error_password: false,
-		error_username_message: '请输入5-20个字符的用户名',
-		error_password_message: '请输入8-12位的密码',
         username: '',
         password: '',
-        remembered: true
+
+        error_username: false,
+        error_password: false,
+        remembered: false,
     },
     methods: {
         // 检查账号
-        check_username: function(){
-        	var re = /^[a-zA-Z0-9_-]{5,20}$/;
+        check_username(){
+        	let re = /^[a-zA-Z0-9_-]{5,20}$/;
 			if (re.test(this.username)) {
                 this.error_username = false;
             } else {
@@ -23,31 +21,31 @@ var vm = new Vue({
             }
         },
 		// 检查密码
-        check_pwd: function(){
-        	var re = /^[0-9A-Za-z]{8,20}$/;
+        check_password(){
+        	let re = /^[0-9A-Za-z]{8,20}$/;
 			if (re.test(this.password)) {
-                this.error_pwd = false;
+                this.error_password = false;
             } else {
-                this.error_pwd = true;
+                this.error_password = true;
             }
         },
         // 表单提交
-        on_submit: function(){
+        on_submit(){
             this.check_username();
-            this.check_pwd();
+            this.check_password();
 
-            if (this.error_username == true || this.error_pwd == true) {
+            if (this.error_username == true || this.error_password == true) {
                 // 不满足登录条件：禁用表单
 				window.event.returnValue = false
             }
         },
         // qq登录
-        qq_login: function(){
-            var next = get_query_string('next') || '/';
-            var url = this.host + '/qq/login/?next=' + next;
+        qq_login(){
+            let next = get_query_string('next') || '/';
+            let url = '/qq/login/?next=' + next;
             axios.get(url, {
-                    responseType: 'json'
-                })
+                responseType: 'json'
+            })
                 .then(response => {
                     location.href = response.data.login_url;
                 })

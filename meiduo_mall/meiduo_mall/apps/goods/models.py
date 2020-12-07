@@ -1,17 +1,13 @@
 from django.db import models
+
 from meiduo_mall.utils.models import BaseModel
+# Create your models here.
 
 
 class GoodsCategory(BaseModel):
-
-    """商品类别
-
-        上一级查询下一级数据相当于是主表查询副表
-        下一级查询上一级数据相当于是副表查询主表
-    """
+    """商品类别"""
     name = models.CharField(max_length=10, verbose_name='名称')
-    parent = models.ForeignKey('self', related_name='subs', null=True, blank=True, on_delete=models.CASCADE,
-                               verbose_name='父类别')
+    parent = models.ForeignKey('self', related_name='subs', null=True, blank=True, on_delete=models.CASCADE, verbose_name='父类别')
 
     class Meta:
         db_table = 'tb_goods_category'
@@ -37,11 +33,8 @@ class GoodsChannelGroup(BaseModel):
 
 class GoodsChannel(BaseModel):
     """商品频道"""
-    # a=models.OneToOneField('',related_name='')
-    # a=models.ManyToManyField('',related_name='')
     group = models.ForeignKey(GoodsChannelGroup, verbose_name='频道组名')
-    category = models.ForeignKey(GoodsCategory, related_name='channels', on_delete=models.CASCADE,
-                                 verbose_name='顶级商品类别')
+    category = models.ForeignKey(GoodsCategory, on_delete=models.CASCADE, verbose_name='顶级商品类别')
     url = models.CharField(max_length=50, verbose_name='频道页面链接')
     sequence = models.IntegerField(verbose_name='组内顺序')
 
@@ -95,9 +88,8 @@ class SKU(BaseModel):
     """商品SKU"""
     name = models.CharField(max_length=50, verbose_name='名称')
     caption = models.CharField(max_length=100, verbose_name='副标题')
-    spu = models.ForeignKey(SPU, related_name='skus', on_delete=models.CASCADE, verbose_name='商品')
+    spu = models.ForeignKey(SPU, on_delete=models.CASCADE, verbose_name='商品')
     category = models.ForeignKey(GoodsCategory, on_delete=models.PROTECT, verbose_name='从属类别')
-    # category_id====>category对象的id
     price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='单价')
     cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='进价')
     market_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='市场价')
@@ -172,6 +164,7 @@ class SKUSpecification(BaseModel):
     def __str__(self):
         return '%s: %s - %s' % (self.sku, self.spec.name, self.option.value)
 
+
 class GoodsVisitCount(BaseModel):
     """统计分类商品访问量模型类"""
     category = models.ForeignKey(GoodsCategory, on_delete=models.CASCADE, verbose_name='商品分类')
@@ -182,6 +175,3 @@ class GoodsVisitCount(BaseModel):
         db_table = 'tb_goods_visit'
         verbose_name = '统计分类商品访问量'
         verbose_name_plural = verbose_name
-
-
-# SPU().objects.aggregate()

@@ -1,433 +1,559 @@
-from django.conf import settings
-from django.core.mail import send_mail
+import re, json, logging
+
 from django.shortcuts import render, redirect
 from django.views import View
 from django import http
-import re
-from .models import User, Address
-from django.contrib.auth import login, logout
-from meiduo_mall.utils.response_code import RETCODE
+from django.db import DatabaseError
+from django.urls import reverse
+from django.contrib.auth import login, authenticate, logout
 from django_redis import get_redis_connection
-from django.contrib.auth import authenticate
-from . import constants
-from meiduo_mall.utils.login import LoginRequiredMixin
-import json
+from django.contrib.auth.mixins import LoginRequiredMixin
+
+from users.models import User, Address
+from meiduo_mall.utils.response_code import RETCODE
+from meiduo_mall.utils.views import LoginRequiredJSONMixin
 from celery_tasks.email_active.tasks import send_active_mail
-from meiduo_mall.utils import meiduo_signature
-from carts.utils import merge_cart
+from users.utils import generate_verify_email_url, check_verify_email_token
+from . import constants
+from goods.models import SKU
+from carts.utils import merge_carts_cookies_redis
+
+# Create your views here.
 
 
-class RegisterView(View):
+# 创建日志输出器
+logger = logging.getLogger('django')
+
+
+class UserBrowseHistory(LoginRequiredJSONMixin, View):
+    """用户浏览记录"""
+
+    def post(self, reqeust):
+        """保存用户商品浏览记录"""
+        # 接收参数
+        json_str = reqeust.body.decode()
+        json_dict = json.loads(json_str)
+        sku_id = json_dict.get('sku_id')
+
+        # 校验参数
+        try:
+            SKU.objects.get(id=sku_id)
+        except SKU.DoesNotExist:
+            return http.HttpResponseForbidden('参数sku_id错误')
+
+        # 保存sku_id到redis
+        redis_conn = get_redis_connection('history')
+        user = reqeust.user
+        pl = redis_conn.pipeline()
+        # 先去重
+        pl.lrem('history_%s' % user.id, 0, sku_id)
+        # 再保存：最近浏览的商品在最前面
+        pl.lpush('history_%s' % user.id, sku_id)
+        # 最后截取
+        pl.ltrim('history_%s' % user.id, 0, 4)
+        # 执行
+        pl.execute()
+
+        # 响应结果
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
+
     def get(self, request):
-        return render(request, 'register.html')
+        """查询用户商品浏览记录"""
+        # 获取登录用户信息
+        user = request.user
+        # 创建连接到redis对象
+        redis_conn = get_redis_connection('history')
+        # 取出列表数据（核心代码）
+        sku_ids = redis_conn.lrange('history_%s' % user.id, 0, -1)  # (0, 4)
 
-    def post(self, request):
-        # 接收
-        username = request.POST.get('user_name')
-        password = request.POST.get('pwd')
-        password2 = request.POST.get('cpwd')
-        mobile = request.POST.get('phone')
-        sms_code = request.POST.get('msg_code')
-        allow = request.POST.get('allow')
+        # 将模型转字典
+        skus = []
+        for sku_id in sku_ids:
+            sku = SKU.objects.get(id=sku_id)
+            skus.append({
+                'id': sku.id,
+                'name': sku.name,
+                'price': sku.price,
+                'default_image_url': sku.default_image.url
+            })
 
-        # 验证
-        # 1.非空
-        if not all([username, password, password2, mobile, sms_code, allow]):
-            return http.HttpResponseForbidden('填写数据不完整')
-        # 2.用户名
-        if not re.match('^[a-zA-Z0-9_-]{5,20}$', username):
-            return http.HttpResponseForbidden('用户名为5-20个字符')
-        if User.objects.filter(username=username).count() > 0:
-            return http.HttpResponseForbidden('用户名已经存在')
-        # 密码
-        if not re.match('^[0-9A-Za-z]{8,20}$', password):
-            return http.HttpResponseForbidden('密码为8-20个字符')
-        # 确认密码
-        if password != password2:
-            return http.HttpResponseForbidden('两个密码不一致')
-        # 手机号
-        if not re.match('^1[3456789]\d{9}$', mobile):
-            return http.HttpResponseForbidden('手机号错误')
-        if User.objects.filter(mobile=mobile).count() > 0:
-            return http.HttpResponseForbidden('手机号存在')
-        # 短信验证码
-        # 1.读取redis中的短信验证码
-        # redis_cli = get_redis_connection('sms_code')
-        # sms_code_redis = redis_cli.get(mobile)
-        # # 2.判断是否过期
-        # if sms_code_redis is None:
-        #     return http.HttpResponseForbidden('短信验证码已经过期')
-        # # 3.删除短信验证码，不可以使用第二次
-        # redis_cli.delete(mobile)
-        # redis_cli.delete(mobile + '_flag')
-        # # 4.判断是否正确
-        # if sms_code_redis.decode() != sms_code:
-        #     return http.HttpResponseForbidden('短信验证码错误')
-
-        # 处理
-        # 1.创建用户对象
-        user = User.objects.create_user(
-            username=username,
-            password=password,
-            mobile=mobile
-        )
-        # 2.状态保持
-        login(request, user)
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'skus': skus})
 
 
-        # 向cookie中写用户名，用于客户端显示
-        response = redirect('/')
-        response.set_cookie('username', username, max_age=constants.USERNAME_COOKIE_EXPIRES)
+class UpdateTitleAddressView(LoginRequiredJSONMixin, View):
+    """更新地址标题"""
 
-        # 响应
-        return response
+    def put(self, reqeust, address_id):
+        """实现更新地址标题逻辑"""
+        # 接收参数：title
+        json_dict = json.loads(reqeust.body.decode())
+        title = json_dict.get('title')
 
+        # 校验参数
+        if not title:
+            return http.HttpResponseForbidden('缺少title')
 
-class UsernameCountView(View):
-    def get(self, request, username):
-        # 接收：通过路由在路径中提取
-        # 验证：路由的正则表达式
-        # 处理：判断用户名是否存在
-        count = User.objects.filter(username=username).count()
-        # 响应：提示是否存在
-        return http.JsonResponse({
-            'count': count,
-            'code': RETCODE.OK,
-            'errmsg': 'OK'
-        })
+        try:
+            # 查询当前要更新标题的地址
+            address = Address.objects.get(id=address_id)
+            # 将新的地址标题覆盖地址标题\
+            address.title = title
+            address.save()
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '更新标题失败'})
 
-
-class MobileCountView(View):
-    def get(self, request, mobile):
-        # 接收
-        # 验证
-        # 处理：判断手机号是否存在
-        count = User.objects.filter(mobile=mobile).count()
-        # 响应：提示是否存在
-        return http.JsonResponse({
-            'count': count,
-            'code': RETCODE.OK,
-            'errmsg': "OK"
-        })
+        # 响应结果
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': '更新标题成功'})
 
 
-class LoginView(View):
-    def get(self, request):
-        return render(request, 'login.html')
+class DefaultAddressView(LoginRequiredJSONMixin, View):
+    """设置默认地址"""
 
-    def post(self, request):
-        # 接收
-        username = request.POST.get('username')
-        pwd = request.POST.get('pwd')
-        next_url = request.GET.get('next', '/')
+    def put(self, reqeust, address_id):
+        """实现设置默认地址逻辑"""
+        try:
+            # 查询出当前哪个地址会作为登录用户的默认地址
+            address = Address.objects.get(id=address_id)
 
-        # 验证：根据用户名查询，找到对象后再对比密码
-        '''
-        user=User.objects.get(username=username)
-        user.password==加密(pwd)===>user.check_password(pwd)
-        '''
-        user = authenticate(request, username=username, password=pwd)
-        if user is None:
-            # 用户名或密码错误
-            return http.HttpResponseForbidden('用户名或密码错误')
-        else:
-            # 用户名和密码正确
-            login(request, user)
-
-            # 向cookie中写用户名，用于客户端显示
-            response = redirect(next_url)
-            response.set_cookie('username', username, max_age=constants.USERNAME_COOKIE_EXPIRES)
-
-            # 合并购物车
-            response = merge_cart(request, response)
-
-            return response
+            # 将指定的地址设置为当前登录用户的默认地址
+            reqeust.user.default_address = address
+            reqeust.user.save()
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '设置默认地址失败'})
+        # 响应结果
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': '设置默认地址成功'})
 
 
-class LogoutView(View):
-    def get(self, request):
-        # 删除状态保持
-        logout(request)
+class UpdateDestoryAddressView(LoginRequiredJSONMixin, View):
+    """更新和删除地址"""
 
-        # 删除cookie中的username
-        response = redirect('/login/')
-        response.delete_cookie('username')
-
-        return response
-
-
-class UserCenterInfoView(LoginRequiredMixin, View):
-    def get(self, request):
-        # if request.user.is_authenticated:
-        #     return render(request, 'user_center_info.html')
-        # else:
-        #     return redirect('/login/')
-
-        return render(request, 'user_center_info.html')
-
-
-class EmailView(LoginRequiredMixin, View):
-    def put(self, request):
-        # 接收
+    def put(self, request, address_id):
+        """更新地址"""
+        # 接收参数
         json_dict = json.loads(request.body.decode())
+        receiver = json_dict.get('receiver')
+        province_id = json_dict.get('province_id')
+        city_id = json_dict.get('city_id')
+        district_id = json_dict.get('district_id')
+        place = json_dict.get('place')
+        mobile = json_dict.get('mobile')
+        tel = json_dict.get('tel')
         email = json_dict.get('email')
 
-        # 验证
-        if not all([email]):
-            return http.JsonResponse({'code': RETCODE.EMAILERR, 'errmsg': "邮箱无效"})
-        if not re.match(r'^[a-z0-9][\w\.\-]*@[a-z0-9\-]+(\.[a-z]{2,5}){1,2}$', email):
-            return http.JsonResponse({'code': RETCODE.EMAILERR, 'errmsg': "邮箱格式错误"})
+        # 校验参数
+        if not all([receiver, province_id, city_id, district_id, place, mobile]):
+            return http.HttpResponseForbidden('缺少必传参数')
+        if not re.match(r'^1[3-9]\d{9}$', mobile):
+            return http.HttpResponseForbidden('参数mobile有误')
+        if tel:
+            if not re.match(r'^(0[0-9]{2,3}-)?([2-9][0-9]{6,7})+(-[0-9]{1,4})?$', tel):
+                return http.HttpResponseForbidden('参数tel有误')
+        if email:
+            if not re.match(r'^[a-z0-9][\w\.\-]*@[a-z0-9\-]+(\.[a-z]{2,5}){1,2}$', email):
+                return http.HttpResponseForbidden('参数email有误')
 
-        # 处理：修改当前登录用户的邮箱属性
-        user = request.user
-        user.email = email
-        user.save()
-
-        # 发邮件：耗时代码，使用celery异步
-        # send_mail('美多商城-邮箱激活','',settings.EMAIL_FROM,[email],html_message='')
-        # 将用户编号加密
-        token = meiduo_signature.dumps({'user_id': user.id}, constants.EMAIL_ACTIVE_EXPIRES)
-        # 拼接激活的链接地址
-        verify_url = settings.EMAIL_VERIFY_URL + '?token=' + token
-        # 异步发邮件
-        send_active_mail.delay(email, verify_url)
-
-        # 响应
-        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': "OK"})
-
-
-class EmailActiveView(View):
-    def get(self, request):
-        # 接收
-        token = request.GET.get('token')
-
-        # 验证
-        if not all([token]):
-            return http.HttpResponseForbidden('参数无效')
-        # 解密，获取用户编号
-        json_dict = meiduo_signature.loads(token, constants.EMAIL_ACTIVE_EXPIRES)
-        if json_dict is None:
-            return http.HttpResponseForbidden('激活信息无效')
-        user_id = json_dict.get('user_id')
-
-        # 处理
+        # 使用最新的地址信息覆盖指定的旧的地址信息
         try:
-            user = User.objects.get(pk=user_id)
-        except:
-            return http.HttpResponseForbidden('用户无效')
-        user.email_active = True
-        user.save()
+            Address.objects.filter(id=address_id).update(
+                user=request.user,
+                title=receiver,
+                receiver=receiver,
+                province_id=province_id,
+                city_id=city_id,
+                district_id=district_id,
+                place=place,
+                mobile=mobile,
+                tel=tel,
+                email=email
+            )
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '修改地址失败'})
 
-        # 响应
-        return redirect('/info/')
+        # 响应新的地址信息给前端渲染
+        address = Address.objects.get(id=address_id)
+        address_dict = {
+            "id": address.id,
+            "title": address.title,
+            "receiver": address.receiver,
+            "province": address.province.name,
+            "city": address.city.name,
+            "district": address.district.name,
+            "place": address.place,
+            "mobile": address.mobile,
+            "tel": address.tel,
+            "email": address.email
+        }
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': '修改地址成功', 'address': address_dict})
+
+    def delete(self, request, address_id):
+        """删除地址"""
+        # 实现指定地址的逻辑删除：is_delete=True
+        try:
+            address = Address.objects.get(id=address_id)
+            address.is_deleted = True
+            address.save()
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '删除地址失败'})
+
+        # 响应结果：code, errmsg
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': '删除地址成功'})
+
+
+class AddressCreateView(LoginRequiredJSONMixin, View):
+    """新增地址"""
+
+    def post(self, reqeust):
+        """实现新增地址逻辑"""
+
+        # 判断用户地址数量是否超过上限：查询当前登录用户的地址数量
+        # count = Address.objects.filter(user=reqeust.user).count()
+        count = reqeust.user.addresses.count()  # 一查多，使用related_name查询
+        if count > constants.USER_ADDRESS_COUNTS_LIMIT:
+            return http.JsonResponse({'code': RETCODE.THROTTLINGERR, 'errmsg': '超出用户地址上限'})
+
+        # 接收参数
+        json_str = reqeust.body.decode()
+        json_dict = json.loads(json_str)
+        receiver = json_dict.get('receiver')
+        province_id = json_dict.get('province_id')
+        city_id = json_dict.get('city_id')
+        district_id = json_dict.get('district_id')
+        place = json_dict.get('place')
+        mobile = json_dict.get('mobile')
+        tel = json_dict.get('tel')
+        email = json_dict.get('email')
+
+        # 校验参数
+        if not all([receiver, province_id, city_id, district_id, place, mobile]):
+            return http.HttpResponseForbidden('缺少必传参数')
+        if not re.match(r'^1[3-9]\d{9}$', mobile):
+            return http.HttpResponseForbidden('参数mobile有误')
+        if tel:
+            if not re.match(r'^(0[0-9]{2,3}-)?([2-9][0-9]{6,7})+(-[0-9]{1,4})?$', tel):
+                return http.HttpResponseForbidden('参数tel有误')
+        if email:
+            if not re.match(r'^[a-z0-9][\w\.\-]*@[a-z0-9\-]+(\.[a-z]{2,5}){1,2}$', email):
+                return http.HttpResponseForbidden('参数email有误')
+
+        # 保存用户传入的地址信息
+        try:
+            address = Address.objects.create(
+                user=reqeust.user,
+                title=receiver,  # 标题默认就是收货人
+                receiver=receiver,
+                province_id=province_id,
+                city_id=city_id,
+                district_id=district_id,
+                place=place,
+                mobile=mobile,
+                tel=tel,
+                email=email,
+            )
+
+            # 如果登录用户没有默认的地址，我们需要指定默认地址
+            if not reqeust.user.default_address:
+                reqeust.user.default_address = address
+                reqeust.user.save()
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '新增地址失败'})
+
+        # 构造新增地址字典数据
+        address_dict = {
+            "id": address.id,
+            "title": address.title,
+            "receiver": address.receiver,
+            "province": address.province.name,
+            "city": address.city.name,
+            "district": address.district.name,
+            "place": address.place,
+            "mobile": address.mobile,
+            "tel": address.tel,
+            "email": address.email
+        }
+
+        # 响应新增地址结果：需要将新增的地址返回给前端渲染
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': '新增地址成功', 'address': address_dict})
 
 
 class AddressView(LoginRequiredMixin, View):
+    """用户收货地址"""
+
     def get(self, request):
-        # 查询当前登录用户的所有收货地址
-        # request.user.addresses.all()
-        address_list = Address.objects.filter(user_id=request.user.id, is_delete=False)
+        """查询并展示用户地址信息"""
 
-        address_list2 = []
-        for address in address_list:
-            address_list2.append({
-                'id': address.id,
-                'title': address.title,
-                'receiver': address.receiver,
-                'province': address.province.name,
-                'province_id': address.province_id,
-                'city': address.city.name,
-                'city_id': address.city_id,
-                'district': address.district.name,
-                'district_id': address.district_id,
-                'place': address.detail_address,
-                'mobile': address.mobile,
-                'tel': address.phone,
-                'email': address.email
-            })
+        # 获取当前登录用户对象
+        login_user = request.user
+        # 使用当前登录用户和is_deleted=False作为条件查询地址数据
+        addresses = Address.objects.filter(user=login_user, is_deleted=False)
 
+        # 将用户地址模型列表转字典列表:因为JsonResponse和Vue.js不认识模型类型，只有Django和Jinja2模板引擎认识
+        address_list = []
+        for address in addresses:
+            address_dict = {
+                "id": address.id,
+                "title": address.title,
+                "receiver": address.receiver,
+                "province": address.province.name,
+                "city": address.city.name,
+                "district": address.district.name,
+                "place": address.place,
+                "mobile": address.mobile,
+                "tel": address.tel,
+                "email": address.email
+            }
+            address_list.append(address_dict)
+
+        # 构造上下文
         context = {
-            'addresses': address_list2,
-            'user': request.user
+            # 'default_address_id': login_user.default_address_id or '0',
+            'default_address_id': login_user.default_address_id or '0',  # 没有默认地址 None
+            'addresses': address_list
         }
 
         return render(request, 'user_center_site.html', context)
 
 
-class AddressCreateView(LoginRequiredMixin, View):
-    def post(self, request):
-        # 接收：不是表单，而是json数据
-        json_dict = json.loads(request.body.decode())
-        title = json_dict.get('title')
-        receiver = json_dict.get('receiver')
-        province_id = json_dict.get('province_id')
-        city_id = json_dict.get('city_id')
-        district_id = json_dict.get('district_id')
-        place = json_dict.get('place')
-        mobile = json_dict.get('mobile')
-        tel = json_dict.get('tel')
-        email = json_dict.get('email')
+class VerifyEmailView(View):
+    """验证邮箱"""
 
-        # 验证
-        if not all([title, receiver, province_id, city_id, district_id, place, mobile]):
-            return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': '数据不完整'})
-
-        # 处理：创建对象
-        address = Address.objects.create(
-            user=request.user,
-            title=title,
-            receiver=receiver,
-            province_id=province_id,
-            city_id=city_id,
-            district_id=district_id,
-            detail_address=place,
-            mobile=mobile,
-            phone=tel,
-            email=email
-        )
-
-        # 响应
-        return http.JsonResponse({
-            'code': RETCODE.OK,
-            'errmsg': 'OK',
-            'address': {
-                'id': address.id,
-                'title': address.title,
-                'receiver': address.receiver,
-                'province': address.province.name,
-                'province_id': address.province_id,
-                'city': address.city.name,
-                'city_id': address.city_id,
-                'district': address.district.name,
-                'district_id': address.district_id,
-                'place': address.detail_address,
-                'mobile': mobile,
-                'tel': tel,
-                'email': email
-            }
-        })
-
-
-class AddressEditView(LoginRequiredMixin, View):
-    def put(self, request, address_id):
-        json_dict = json.loads(request.body.decode())
-        title = json_dict.get('title')
-        receiver = json_dict.get('receiver')
-        province_id = json_dict.get('province_id')
-        city_id = json_dict.get('city_id')
-        district_id = json_dict.get('district_id')
-        place = json_dict.get('place')
-        mobile = json_dict.get('mobile')
-        tel = json_dict.get('tel')
-        email = json_dict.get('email')
-
-        # 验证
-        if not all([title, receiver, province_id, city_id, district_id, place, mobile]):
-            return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': '数据不完整'})
-
-        # 处理：根据id查询收货地址，并修改
-        address = Address.objects.get(pk=address_id)
-        address.receiver = receiver
-        address.province_id = province_id
-        address.city_id = city_id
-        address.district_id = district_id
-        address.detail_address = place
-        address.mobile = mobile
-        address.phone = tel
-        address.email = email
-        address.save()
-
-        # 响应
-        return http.JsonResponse({
-            'code': RETCODE.OK,
-            'errmsg': 'OK',
-            'address': {
-                'id': address.id,
-                'title': address.title,
-                'receiver': address.receiver,
-                'province': address.province.name,
-                'province_id': address.province_id,
-                'city': address.city.name,
-                'city_id': address.city_id,
-                'district': address.district.name,
-                'district_id': address.district_id,
-                'place': address.detail_address,
-                'mobile': mobile,
-                'tel': tel,
-                'email': email
-            }
-        })
-
-    def delete(self, request, address_id):
-        # 处理：删除
-        address = Address.objects.get(pk=address_id)
-
-        # 物理删除
-        # address.delete()
-
-        # 逻辑删除
-        address.is_delete = True
-        address.save()
-
-        # 响应
-        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
-
-
-class AddressDefaultView(LoginRequiredMixin, View):
-    def put(self, request, address_id):
-        # 处理：修改当前登录用户的默认收货地址属性
-        user = request.user
-        user.default_address_id = address_id
-        user.save()
-
-        # 响应
-        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
-
-
-class AddressTitleView(LoginRequiredMixin, View):
-    def put(self, request, address_id):
-        # 接收
-        title = json.loads(request.body.decode()).get('title')
-
-        # 验证
-        if not all([title]):
-            return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': "请指定标题"})
-        if Address.objects.filter(title=title, user_id=request.user.id, is_delete=False).count() > 0:
-            return http.JsonResponse({'code': RETCODE.PARAMERR, 'errmsg': '标题已经存在'})
-
-        # 处理
-        address = Address.objects.get(pk=address_id)
-        address.title = title
-        address.save()
-
-        # 响应
-        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
-
-
-class PwdView(LoginRequiredMixin, View):
     def get(self, request):
-        return render(request, 'user_center_pass.html')
+        # 接收参数
+        token = request.GET.get('token')
+
+        # 校验参数
+        if not token:
+            return http.HttpResponseForbidden('缺少token')
+
+        # 从token中提取用户信息user_id ==> user
+        user = check_verify_email_token(token)
+        if not user:
+            return http.HttpResponseBadRequest('无效的token')
+
+        # 将用户的email_active字段设置为True
+        try:
+            user.email_active = True
+            user.save()
+        except Exception as e:
+            logger.error(e)
+            return http.HttpResponseServerError('激活邮箱失败')
+
+        # 响应结果：重定向到用户中心
+        return redirect(reverse('users:info'))
+
+
+class EmailView(LoginRequiredJSONMixin, View):
+    """添加邮箱"""
+
+    def put(self, request):
+        # 接收参数
+        json_str = request.body.decode()  # body 类型是bytes
+        json_dict = json.loads(json_str)
+        email = json_dict.get('email')
+
+        # 校验参数
+        if not re.match(r'^[a-z0-9][\w\.\-]*@[a-z0-9\-]+(\.[a-z]{2,5}){1,2}$', email):
+            return http.HttpResponseForbidden('参数email有误')
+
+        # 将用户传入的邮箱保存到用户数据库的email字段中
+        try:
+            request.user.email = email
+            request.user.save()
+        except Exception as e:
+            logger.error(e)
+            return http.JsonResponse({'code': RETCODE.DBERR, 'errmsg': '添加邮箱失败'})
+
+        # 发送邮箱验证邮件
+        verify_url = generate_verify_email_url(request.user)
+        # send_verify_email(email, verify_url) # 错误的写法
+        send_active_mail.delay(email, verify_url)  # 一定要记得调用delay
+
+        # 响应结果
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK'})
+
+
+class UserInfoView(LoginRequiredMixin, View):
+    """用户中心"""
+
+    def get(self, request):
+        """提供用户中心页面"""
+        # 如果LoginRequiredMixin判断出用户已登录，那么request.user就是登陆用户对象
+        context = {
+            'username': request.user.username,
+            'mobile': request.user.mobile,
+            'email': request.user.email,
+            'email_active': request.user.email_active
+        }
+        return render(request, 'user_center_info.html', context)
+
+
+class LogoutView(View):
+    """用户退出登录"""
+
+    def get(self, request):
+        """实现用户退出登录的逻辑"""
+        # 清除状态保持信息
+        logout(request)
+
+        # 退出登录后重定向到首页
+        response = redirect(reverse('contents:index'))
+
+        # 删除cookies中的用户名
+        response.delete_cookie('username')
+
+        # 响应结果
+        return response
+
+
+class LoginView(View):
+    """用户登录"""
+
+    def get(self, request):
+        """提供用户登录页面"""
+        return render(request, 'login.html')
 
     def post(self, request):
-        # 接收
-        old_pwd = request.POST.get('old_pwd')
-        new_pwd = request.POST.get('new_pwd')
-        new_cpwd = request.POST.get('new_cpwd')
+        """实现用户登录逻辑"""
+        # 接收参数
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+        remembered = request.POST.get('remembered')
 
-        # 验证
-        # 1.旧密码是否正确
-        user = request.user
-        if not user.check_password(old_pwd):
-            return http.HttpResponseForbidden('旧密码错误')
-        if not re.match('^[0-9A-Za-z]{8,20}$', new_pwd):
-            return http.HttpResponseForbidden('密码为8-20个字符')
-        # 确认密码
-        if new_pwd != new_cpwd:
-            return http.HttpResponseForbidden('两个密码不一致')
+        # 校验参数
+        if not all([username, password]):
+            return http.HttpResponseForbidden('缺少必传参数')
+        if not re.match(r'^[a-zA-Z0-9_-]{5,20}$', username):
+            return http.HttpResponseForbidden('请输入正确的用户名或手机号')
 
-        # 处理
-        user.set_password(new_pwd)
-        user.save()
+        if not re.match(r'^[0-9A-Za-z]{8,20}$', password):
+            return http.HttpResponseForbidden('密码最少8位，最长20位')
 
-        # 响应
-        return render(request, 'user_center_pass.html')
+        # 认证用户:使用账号查询用户是否存在，如果用户存在，再校验密码是否正确
+        user = authenticate(username=username, password=password)
+        if user is None:
+            return render(request, 'login.html', {'account_errmsg': '账号或密码错误'})
+
+        # 状态保持
+        login(request, user)
+        # 使用remembered确定状态保持周期（实现记住登录）
+        if remembered != 'on':
+            # 没有记住登录：状态保持在浏览器会话结束后就销毁
+            request.session.set_expiry(0)  # 单位是秒
+        else:
+            # 记住登录：状态保持周期为两周:默认是两周
+            request.session.set_expiry(None)
+
+        # 响应结果
+        # 先取出next
+        next = request.GET.get('next')
+        if next:
+            # 重定向到next
+            response = redirect(next)
+        else:
+            # 重定向到首页
+            response = redirect(reverse('contents:index'))
+
+        # 为了实现在首页的右上角展示用户名信息，我们需要将用户名缓存到cookie中
+        # response.set_cookie('key', 'val', 'expiry')
+        response.set_cookie('username', user.username, max_age=3600 * 24 * 15)
+
+        # 用户登录成功，合并cookie购物车到redis购物车
+        response = merge_carts_cookies_redis(request=request, user=user, response=response)
+
+        # 响应结果
+        return response
+
+
+class MobileCountView(View):
+    """判断手机号是否重复注册"""
+
+    def get(self, request, mobile):
+        """
+        :param mobile: 手机号
+        :return: JSON
+        """
+        count = User.objects.filter(mobile=mobile).count()
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'count': count})
+
+
+class UsernameCountView(View):
+    """判断用户名是否重复注册"""
+
+    def get(self, request, username):
+        """
+        :param username: 用户名
+        :return: JSON
+        """
+        # 实现主体业务逻辑：使用username查询对应的记录的条数(filter返回的是满足条件的结果集)
+        count = User.objects.filter(username=username).count()
+        # 响应结果
+        return http.JsonResponse({'code': RETCODE.OK, 'errmsg': 'OK', 'count': count})
+
+
+class RegisterView(View):
+    """用户注册"""
+
+    def get(self, request):
+        """提供用户注册页面"""
+        return render(request, 'register.html')
+
+    def post(self, request):
+        """实现用户注册业务逻辑"""
+        # 接收参数：表单参数
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+        password2 = request.POST.get('password2')
+        mobile = request.POST.get('mobile')
+        sms_code_client = request.POST.get('sms_code')
+        allow = request.POST.get('allow')
+
+        # 校验参数：前后端的校验需要分开，避免恶意用户越过前端逻辑发请求，要保证后端的安全，前后端的校验逻辑相同
+        # 判断参数是否齐全:all([列表])：会去校验列表中的元素是否为空，只要有一个为空，返回false
+        if not all([username, password, password2, mobile, allow]):
+            return http.HttpResponseForbidden('缺少必传参数')
+        # 判断用户名是否是5-20个字符
+        if not re.match(r'^[a-zA-Z0-9_-]{5,20}$', username):
+            return http.HttpResponseForbidden('请输入5-20个字符的用户名')
+        # 判断密码是否是8-20个数字
+        if not re.match(r'^[0-9A-Za-z]{8,20}$', password):
+            return http.HttpResponseForbidden('请输入8-20位的密码')
+        # 判断两次密码是否一致
+        if password != password2:
+            return http.HttpResponseForbidden('两次输入的密码不一致')
+        # 判断手机号是否合法
+        if not re.match(r'^1[3-9]\d{9}$', mobile):
+            return http.HttpResponseForbidden('请输入正确的手机号码')
+        # 判断短信验证码是否输入正确
+        redis_conn = get_redis_connection('verify_code')
+        sms_code_server = redis_conn.get('sms_%s' % mobile)
+        if sms_code_server is None:
+            return render(request, 'register.html', {'sms_code_errmsg': '短信验证码已失效'})
+        if sms_code_client != sms_code_server.decode():
+            return render(request, 'register.html', {'sms_code_errmsg': '输入短信验证码有误'})
+        # 判断是否勾选用户协议
+        if allow != 'on':
+            return http.HttpResponseForbidden('请勾选用户协议')
+
+        # 保存注册数据：是注册业务的核心
+        # return render(request, 'register.html', {'register_errmsg': '注册失败'})
+        try:
+            user = User.objects.create_user(username=username, password=password, mobile=mobile)
+        except DatabaseError:
+            return render(request, 'register.html', {'register_errmsg': '注册失败'})
+
+        # 实现状态保持
+        login(request, user)
+
+        # 响应结果:重定向到首页
+        response = redirect(reverse('contents:index'))
+
+        # 为了实现在首页的右上角展示用户名信息，我们需要将用户名缓存到cookie中
+        # response.set_cookie('key', 'val', 'expiry')
+        response.set_cookie('username', user.username, max_age=3600 * 24 * 15)
+
+        # 响应结果:重定向到首页
+        return response

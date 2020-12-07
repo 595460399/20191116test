@@ -1,19 +1,19 @@
-var vm = new Vue({
+let vm = new Vue({
     el: '#app',
-	// 修改Vue变量的读取语法，避免和django模板语法冲突
     delimiters: ['[[', ']]'],
     data: {
+        username: getCookie('username'),
     },
     mounted(){
     },
     methods: {
         // 发起支付
         order_payment(){
-            var order_id = get_query_string('order_id');
-            var url = '/payment/' + order_id + '/';
+            let order_id = get_query_string('order_id');
+            let url = '/payment/' + order_id + '/';
             axios.get(url, {
-                    responseType: 'json'
-                })
+                responseType: 'json'
+            })
                 .then(response => {
                     if (response.data.code == '0') {
                         // 跳转到支付宝

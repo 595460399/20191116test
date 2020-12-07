@@ -1,2 +1,2 @@
-# 指定openid的有效时间
-OPENID_EXPIRES = 60 * 5
+# access_token有效期，单位秒
+ACCESS_TOKEN_EXPIRES = 600

@@ -1,5 +1,5 @@
 from celery_tasks.main import app
-from meiduo_mall.libs.yuntongxun.sms import CCP
+from verifications.libs.yuntongxun.ccp_sms import CCP
 from . import constants
 
 
@@ -13,6 +13,7 @@ def send_sms(self, mobile, sms_code):
     # return ret
 
     print(sms_code)
+
 
 def hello():
     print('ok')

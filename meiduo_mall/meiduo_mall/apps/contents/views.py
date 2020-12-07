@@ -1,27 +1,35 @@
 from django.shortcuts import render
 from django.views import View
-from goods.models import GoodsCategory, GoodsChannel
-from .models import ContentCategory, Content
-from meiduo_mall.utils.categories import get_categories
+from collections import OrderedDict
+
+from contents.models import ContentCategory
+from contents.utils import get_categories
+
+
+# Create your views here.
+
 
 class IndexView(View):
+    """首页广告"""
+
     def get(self, request):
-        #查询分类
-        categories=get_categories()
+        """提供首页广告页面"""
+        # 查询并展示商品分类
+        categories = get_categories()
 
-        # 查询广告数据
-        content_category_list = ContentCategory.objects.all()
-        # 构造广告字典
-        '''
-        {广告位标识：[广告1,....]}
-        '''
-        contents = {}
-        for content_category in content_category_list:
-            contents[content_category.key] = content_category.content_set.order_by('sequence')
+        # 查询首页广告数据
+        # 查询所有的广告类别
+        contents = OrderedDict()
+        content_categories = ContentCategory.objects.all()
+        for content_category in content_categories:
+            # 使用广告类别查询出该类别对应的所有的广告内容
+            contents[content_category.key] = content_category.content_set.filter(status=True).order_by(
+                'sequence')  # 查询出未下架的广告并排序
 
+        # 构造上下文
         context = {
             'categories': categories,
             'contents': contents
         }
 
-        return render(request, 'index.html', context=context)
+        return render(request, 'index.html', context)
